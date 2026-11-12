@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+**/.env
+**/.env.*
+**/node_modules
+**/.next
+**/coverage
+generated
+todo-app/out
+todo-app/build
+*.log

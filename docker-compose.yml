@@ -1,9 +1,30 @@
 
 services:
+  mongo-keyfile-init:
+    image: mongo:8.0
+    container_name: todo-mongo-keyfile-init
+    restart: "no"
+    volumes:
+      - mongo_keyfile_data:/keyfile
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -s /keyfile/keyfile ]; then
+          head -c 756 /dev/urandom | base64 | head -c 756 > /keyfile/keyfile
+        fi
+        chown 999:999 /keyfile/keyfile
+        chmod 400 /keyfile/keyfile
+
   mongodb:
     image: mongo:8.0
     container_name: todo-mongodb
     restart: unless-stopped
+    command:
+      ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/etc/mongo-keyfile/keyfile"]
+    depends_on:
+      mongo-keyfile-init:
+        condition: service_completed_successfully
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
@@ -11,6 +32,7 @@ services:
       - "127.0.0.1:27017:27017"
     volumes:
       - mongodb_data:/data/db
+      - mongo_keyfile_data:/etc/mongo-keyfile:ro
     healthcheck:
       test:
         [
@@ -22,6 +44,48 @@ services:
       retries: 5
       start_period: 20s
 
+  mongo-init-replica:
+    image: mongo:8.0
+    container_name: todo-mongo-init-replica
+    restart: "no"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mongosh --quiet --host mongodb:27017 \
+          --username "$$MONGO_ROOT_USERNAME" \
+          --password "$$MONGO_ROOT_PASSWORD" \
+          --authenticationDatabase admin \
+          --eval '
+            try {
+              const status = rs.status();
+              if (status.ok === 1) {
+                const config = rs.conf();
+                if (config.members[0].host !== "mongodb:27017") {
+                  config.members[0].host = "mongodb:27017";
+                  printjson(rs.reconfig(config));
+                } else {
+                  print("Replica set is already initialized.");
+                }
+                quit(0);
+              }
+            } catch (error) {
+              if (error.codeName !== "NotYetInitialized" && error.code !== 94) {
+                throw error;
+              }
+            }
+            printjson(rs.initiate({
+              _id: "rs0",
+              members: [{ _id: 0, host: "mongodb:27017" }]
+            }));
+          '
+
   mongo-express:
     image: mongo-express:1.0.2
     container_name: todo-mongo-express
@@ -29,13 +93,44 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+      mongo-init-replica:
+        condition: service_completed_successfully
     environment:
-      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin&directConnection=true
       ME_CONFIG_BASICAUTH_ENABLED: "true"
       ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_EXPRESS_USERNAME}
       ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_EXPRESS_PASSWORD}
     ports:
       - "127.0.0.1:8081:8081"
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      mongo-init-replica:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/todo?authSource=admin&replicaSet=rs0&directConnection=true
+    ports:
+      - "127.0.0.1:${APP_PORT:-3001}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/todos').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
 volumes:
   mongodb_data:
+  mongo_keyfile_data:

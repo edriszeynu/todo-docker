@@ -1,7 +1,8 @@
 {
   "private": true,
   "scripts": {
-    "dev": "npm --prefix todo-app run dev"
+    "dev": "npm --prefix todo-app run dev",
+    "shadcn": "npm --prefix todo-app run shadcn --"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",
