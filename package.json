@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix todo-app run dev"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "dotenv": "^18.0.10"
+  },
+  "devDependencies": {
+    "prisma": "^6.19.0"
+  }
+}
